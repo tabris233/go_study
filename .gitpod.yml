@@ -1,3 +1,7 @@
 tasks:
   - init: 'echo "TODO: Replace with init/build command"'
     command: 'echo "TODO: Replace with command to start project"'
+
+vscode:
+  extensions:
+    - jock.svg@1.4.1:2PbiEgF9YVUUXsb+cHcwCQ==
