@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
+	"time"
 )
 
 type client struct {
@@ -16,23 +18,35 @@ var (
 	entering = make(chan client)
 	leaving  = make(chan client)
 	messages = make(chan string) // all incoming client messages
+	timeout  = time.Minute * 5
 )
 
 func broadcaster() {
 	clients := make(map[client]bool) // all connected clients
+
+	sendToAllCh := func(msg string, name_flag bool) {
+		for cli := range clients {
+			m := msg
+			if name_flag {
+				m += cli.Name
+			}
+			select {
+			case cli.Msg <- m:
+			default:
+				// Do nothing.
+			}
+		}
+	}
+
 	for {
 		select {
 		case msg := <-messages:
 			// Broadcast incoming message to all
 			// clients' outgoing message channels.
-			for cli := range clients {
-				cli.Msg <- msg
-			}
+			sendToAllCh("["+time.Now().Format(time.StampMilli)+"] "+msg, false)
 		case cli := <-entering:
 			clients[cli] = true
-			for c := range clients {
-				cli.Msg <- "Present:" + c.Name
-			}
+			sendToAllCh("Present:", true)
 		case cli := <-leaving:
 			delete(clients, cli)
 			close(cli.Msg)
@@ -41,18 +55,42 @@ func broadcaster() {
 }
 
 func handleConn(conn net.Conn) {
-	ch := make(chan string) // outgoing client messages
-	go clientWriter(conn, ch)
-	who := conn.RemoteAddr().String()
-	cli := client{ch, who}
+	out := make(chan string, 1) // outgoing client messages
+	go clientWriter(conn, out)
+	in := make(chan string) // incoming client
+	go func() {
+		input := bufio.NewScanner(conn)
+		for input.Scan() {
+			in <- input.Text()
+		}
+	}()
 
-	ch <- "You are " + who
+	who := strings.Split(conn.RemoteAddr().String(), ":")[1]
+	out <- "Print your name: "
+	select {
+	case name := <-in:
+		who = name
+	case <-time.After(timeout):
+		conn.Close()
+		return
+	}
+
+	cli := client{out, who}
+	out <- "You are " + who
 	messages <- who + " has arrived"
 	entering <- cli
-	input := bufio.NewScanner(conn)
-	for input.Scan() {
-		messages <- who + ": " + input.Text()
+
+loop:
+	for {
+		select {
+		case msgs := <-in:
+			messages <- who + ": " + msgs
+		case <-time.After(timeout):
+			close(in)
+			break loop
+		}
 	}
+
 	// NOTE: ignoring potential errors from input.Err()
 	leaving <- cli
 	messages <- who + " has left"
